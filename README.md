@@ -2,7 +2,7 @@
 
 A Cadence Spectre simulation pipeline for op-amp netlists. Used as part of the ASPECTOR analog design suite to extract performance data for dataset construction.
 
-Current Version: **1.4.2**
+Current Version: **1.5.0**
 
 ## ⚡ Current Features
 

@@ -1,0 +1,128 @@
+simulator lang=spectre 
+global 0 gnd! vdd!
+parameters dc_offset=0 mode_unity=0 run_gatekeeper={{run_gatekeeper}} run_full_char={{run_full_char}} fet_num={{fet_num}} vdd={{vdd}} vcm={{vcm}} tempc={{tempc}} cload_val={{cload_val}} vbiasp0={{vbiasp0}} vbiasn0={{vbiasn0}} nA1={{nA1}} nA2={{nA2}} nA3={{nA3}} nB1={{nB1}} nB2={{nB2}} nB3={{nB3}}
+
+{% if fet_num == 7 %}
+include "{{lstp_path}}/7nfet.pm"
+include "{{lstp_path}}/7pfet.pm"
+{% elif fet_num == 10 %}
+include "{{lstp_path}}/10nfet.pm"
+include "{{lstp_path}}/10pfet.pm"
+{% elif fet_num == 14 %}
+include "{{lstp_path}}/14nfet.pm"
+include "{{lstp_path}}/14pfet.pm"
+{% elif fet_num == 16 %}
+include "{{lstp_path}}/16nfet.pm"
+include "{{lstp_path}}/16pfet.pm"
+{% elif fet_num == 20 %}
+include "{{lstp_path}}/20nfet.pm"
+include "{{lstp_path}}/20pfet.pm"
+{% endif %}
+
+*--- TOPOLOGY ---*
+*--- differential_single_stage_ota_pmos Vbiasn0 Vbiasp0 Vinn Vinp Voutn Voutp ---*
+*.PININFO Vbiasn0:I Vbiasp0:I Vinn:I Vinp:I Voutn:O Voutp:O
+MM0 net12 Vbiasp0 vdd! vdd! pfet l=nA1 nfin=nB1
+MM1 Voutn Vinp net12 vdd! pfet l=nA2 nfin=nB2
+MM2 Voutp Vinn net12 vdd! pfet l=nA2 nfin=nB2
+MM3 Voutn Vbiasn0 gnd! gnd! nfet l=nA3 nfin=nB3
+MM4 Voutp Vbiasn0 gnd! gnd! nfet l=nA3 nfin=nB3
+
+*--- Bias Values ---*
+VN0 (Vbiasn0 gnd!) vsource dc=vbiasn0 type=dc
+VP0 (Vbiasp0 gnd!) vsource dc=vbiasp0 type=dc
+
+*--- TESTBENCH ---*
+VS (gnd! 0) vsource dc=0 type=dc
+V0 (vdd! gnd!) vsource dc=vdd type=dc 
+V1 (cm gnd!) vsource dc=vcm type=dc 
+
+Vsig (sig_node 0) vsource type=sine dc=dc_offset mag=1 \
+    ampl=0 freq=1M val0=0 val1=0 delay=5n rise=50p fall=50p width=2u period=200n
+
+E_pos (Vinp_pre cm sig_node 0) vcvs gain=0.5
+E_neg (Vinn_pre cm sig_node 0) vcvs gain=-0.5
+
+R_src_p (Vinp_pre Vinp) resistor r=1G isnoisy=no
+R_src_n (Vinn_pre Vinn) resistor r=1G isnoisy=no
+
+I_probe_p (Voutp Vfb_p) iprobe
+I_probe_n (Voutn Vfb_n) iprobe
+
+R_fb_p (Vfb_p Vinn) resistor r=1m isnoisy=no
+R_fb_n (Vfb_n Vinp) resistor r=1m isnoisy=no
+
+E_servo_diff (v_err 0 Voutn Voutp) vcvs gain=1e6
+R_servo_int (v_err v_int) resistor r=1G isnoisy=no
+C_servo_int (v_int 0) capacitor c=1F
+E_servo_p (v_corr_p cm v_int 0) vcvs gain=0.5
+E_servo_n (v_corr_n cm v_int 0) vcvs gain=-0.5
+
+R_servo_sw_p (v_corr_p Vinp) resistor r=1G isnoisy=no
+R_servo_sw_n (v_corr_n Vinn) resistor r=1G isnoisy=no
+
+R_cm_p (Voutp Vavg) resistor r=1G isnoisy=no
+R_cm_n (Voutn Vavg) resistor r=1G isnoisy=no
+G_cmfb_p (Voutp 0 Vavg cm) vccs gm=0.001
+G_cmfb_n (Voutn 0 Vavg cm) vccs gm=0.001
+
+Cload_p (Voutp gnd!) capacitor c=cload_val
+Cload_n (Voutn gnd!) capacitor c=cload_val
+
+*--- SIMULATOR OPTIONS ---*
+simulatorOptions options rawfmt=psfbin psfversion="1.4.0" reltol=1e-4 vabstol=1e-6 \
+    iabstol=1e-12 temp=tempc tnom=27 scalem=1.0 scale=1.0 gmin=1e-12 rforce=1 \
+    cmin=1f homotopy=all
+
+*--- SIMULATION TIER 1 ---*
+{% if run_gatekeeper %}
+dcOp_sim dc 
+stb_sim stb probe=[I_probe_p I_probe_n] start=1 stop=100G dec=10
+{% endif %}
+
+*--- SIMULATION TIER 2 ---*
+{% if run_full_char %}
+set_fb_off_p alter dev=R_fb_p param=r value=1G
+set_fb_off_n alter dev=R_fb_n param=r value=1G
+set_intrinsic_on_p alter dev=R_src_p param=r value=1m
+set_intrinsic_on_n alter dev=R_src_n param=r value=1m
+set_servo_on_p alter dev=R_servo_sw_p param=r value=1m
+set_servo_on_n alter dev=R_servo_sw_n param=r value=1m
+
+xf_sim (Voutp Voutn) xf start=1 stop=100G dec=10
+noise_sim (Voutp Voutn) noise start=1 stop=100G dec=10 iprobe=Vsig
+
+set_servo_off_p alter dev=R_servo_sw_p param=r value=1G
+set_servo_off_n alter dev=R_servo_sw_n param=r value=1G
+
+swing_sweep dc param=dc_offset start=(-0.1 * vdd) stop=(0.1 * vdd) step=200u
+
+set_fb_on_p alter dev=R_fb_p param=r value=1m
+set_fb_on_n alter dev=R_fb_n param=r value=1m
+set_src_sine_type alter dev=Vsig param=type value=sine
+set_src_sine_ampl alter dev=Vsig param=ampl value=(0.1 * vdd)
+set_src_sine_freq alter dev=Vsig param=freq value=1M
+
+thd_pss pss fund=1M harms=10 tstab=2u errpreset=moderate
+
+set_src_pulse_type alter dev=Vsig param=type value=pulse
+set_src_val_small alter dev=Vsig param=val1 value=(0.05 * vdd)
+set_src_width alter dev=Vsig param=width value=2u
+
+settle_small_tran tran stop=200n step=100p errpreset=conservative
+
+set_src_val_large alter dev=Vsig param=val1 value=(0.2 * vdd)
+
+slew_large_tran tran stop=200n step=100p errpreset=conservative
+{% endif %}
+
+*--- DATA EXPORT ---*
+dcOpInfo info what=oppoint where=rawfile
+modelParameter info what=models where=rawfile
+element info what=inst where=rawfile
+outputParameter info what=output where=rawfile
+designParamVals info what=parameters where=rawfile
+primitives info what=primitives where=rawfile
+subckts info what=subckts where=rawfile
+save V0:p Voutp Voutn Vinp Vinn MM0:gm MM0:gds MM0:vth MM0:vdsat MM0:vgs MM0:vds MM0:ids MM0:cgg MM0:cgs MM0:cdd MM0:cgd MM0:css MM0:region MM1:gm MM1:gds MM1:vth MM1:vdsat MM1:vgs MM1:vds MM1:ids MM1:cgg MM1:cgs MM1:cdd MM1:cgd MM1:css MM1:region MM2:gm MM2:gds MM2:vth MM2:vdsat MM2:vgs MM2:vds MM2:ids MM2:cgg MM2:cgs MM2:cdd MM2:cgd MM2:css MM2:region MM3:gm MM3:gds MM3:vth MM3:vdsat MM3:vgs MM3:vds MM3:ids MM3:cgg MM3:cgs MM3:cdd MM3:cgd MM3:css MM3:region MM4:gm MM4:gds MM4:vth MM4:vdsat MM4:vgs MM4:vds MM4:ids MM4:cgg MM4:cgs MM4:cdd MM4:cgd MM4:css MM4:region
+saveOptions options save=allpub rawfmt=psfbin

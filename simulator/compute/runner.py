@@ -20,12 +20,31 @@ def worker_task(args):
         val = extractor(config, sim_id=idx)
         return True, (idx, val)
     except Exception as e:
-        # Return error info instead of writing to file directly if possible,
-        # or write to discrete log.
-        err_msg = f"Sim {idx} Failed: {str(e)}"
+        import traceback
+        err_msg = f"Sim {idx} Failed: {str(e)}\n{traceback.format_exc()}"
+        print(f"\n[WORKER ERROR] {err_msg}", flush=True)
         return False, (idx, err_msg)
 
-def run_parallel_simulations(samples, extractor, n_workers):
+# --- Adaptive Worker Utilities --- #
+
+MIN_FREE_CORES = 2  # Always leave this many cores for OS / other users
+
+def get_adaptive_worker_count(max_cores=None):
+    """
+    Calculate a nice worker count based on real-time system load.
+    Uses all available cores minus current load and a small safety buffer.
+    """
+    if max_cores is None:
+        max_cores = mp.cpu_count()
+    try:
+        load1, _, _ = os.getloadavg()
+    except AttributeError:
+        load1 = 0
+    free = max(1, int(max_cores - load1) - MIN_FREE_CORES)
+    return free
+
+
+def run_parallel_simulations(samples, extractor, n_workers, adaptive=False):
     """
     Orchestrates the parallel execution of the simulation batch.
     Yields progress updates to the caller.
@@ -37,7 +56,9 @@ def run_parallel_simulations(samples, extractor, n_workers):
     extractor : Extractor
         Configured Extractor instance.
     n_workers : int
-        Number of parallel processes.
+        Number of parallel processes (initial). Ignored if adaptive=True on re-pool.
+    adaptive : bool
+        If True, re-checks system load and adjusts pool size between micro-batches.
         
     Yields:
     -------
@@ -46,42 +67,84 @@ def run_parallel_simulations(samples, extractor, n_workers):
         result_data is (index, (reward, specs)) or None if failed
     """
     
+    # Pre-flight: compute sim_keys and ensure uniqueness and freshness
+    sim_keys = []
+    for config in samples:
+        try:
+            key = extractor.sim_key_for_params(config)
+        except Exception:
+            key = None
+        sim_keys.append(key)
+
+    # Check for duplicate keys within the batch
+    unique_keys = set(k for k in sim_keys if k is not None)
+    if len(unique_keys) != len(sim_keys):
+        raise RuntimeError("Pre-flight check failed: duplicate parametrizations detected in samples.")
+
+    # Check for already-existing results in extractor.results_dir
+    existing = set()
+    if hasattr(extractor, 'results_dir') and extractor.results_dir:
+        for k in unique_keys:
+            if k is None:
+                continue
+            if os.path.exists(os.path.join(extractor.results_dir, f"{k}.json")):
+                existing.add(k)
+    if existing:
+        raise RuntimeError(f"Pre-flight check failed: {len(existing)} samples already have results in {extractor.results_dir}")
+
     task_args = []
     for i, config in enumerate(samples):
-        # i is 0-based index in samples list. 
-        # sim_id will be i+1 for logging, but we return i for array indexing
         task_args.append((i, config, extractor))
 
     total = len(samples)
     completed = 0
     start_time = time.time()
     
-    # We use a chunksize heuristic to keep workers busy but responsive
-    chunk_size = max(1, len(samples) // (n_workers * 4))
-
-    try:
-        with mp.Pool(processes=n_workers) as pool:
-            # We use imap_unordered to get results as they finish 
-            # for real-time progress reporting
-            for result in pool.imap_unordered(worker_task, task_args, chunksize=chunk_size):
-                success, payload = result
+    if not adaptive:
+        # Fixed mode: single pool for the entire batch
+        chunk_size = max(1, total // (n_workers * 4))
+        try:
+            with mp.Pool(processes=n_workers) as pool:
+                for result in pool.imap_unordered(worker_task, task_args, chunksize=chunk_size):
+                    success, payload = result
+                    idx, data = payload
+                    if not success:
+                        print(f"\n[!] SIMULATION FAILED - ID {idx}: {data}", flush=True)
+                        final_data = (idx, (0.0, {'valid': False}))
+                    else:
+                        final_data = (idx, data)
+                    completed += 1
+                    elapsed = time.time() - start_time
+                    yield (completed, total, elapsed, final_data)
+        except KeyboardInterrupt:
+            raise KeyboardInterrupt
+    else:
+        # Adaptive mode: process in micro-batches, re-check load between each
+        MICRO_BATCH_INTERVAL = 50  # Re-evaluate load every N sims
+        remaining = list(task_args)
+        
+        try:
+            while remaining:
+                # Re-check load and pick worker count
+                current_workers = get_adaptive_worker_count()
+                # Don't log every time, just when it changes meaningfully
+                micro_size = min(MICRO_BATCH_INTERVAL, len(remaining))
+                micro_batch = remaining[:micro_size]
+                remaining = remaining[micro_size:]
                 
-                # Payload is now (idx, data) for success, or (idx, err) for fail
-                idx, data = payload
+                chunk_size = max(1, micro_size // (current_workers * 2))
                 
-                if not success:
-                    # Ideally log this error to a file
-                    with open("simulation_errors.log", "a") as f:
-                        f.write(f"ID {idx}: {data}\n")
-                    final_data = (idx, (0.0, {'valid': False})) # Default fail with ID
-                else:
-                    final_data = (idx, data)
-                
-                completed += 1
-                elapsed = time.time() - start_time
-                
-                yield (completed, total, elapsed, final_data)
-                
-    except KeyboardInterrupt:
-        # Re-raise to let caller handle cleanup/exit
-        raise KeyboardInterrupt
+                with mp.Pool(processes=current_workers) as pool:
+                    for result in pool.imap_unordered(worker_task, micro_batch, chunksize=chunk_size):
+                        success, payload = result
+                        idx, data = payload
+                        if not success:
+                            print(f"\n[!] SIMULATION FAILED - ID {idx}: {data}", flush=True)
+                            final_data = (idx, (0.0, {'valid': False}))
+                        else:
+                            final_data = (idx, data)
+                        completed += 1
+                        elapsed = time.time() - start_time
+                        yield (completed, total, elapsed, final_data)
+        except KeyboardInterrupt:
+            raise KeyboardInterrupt

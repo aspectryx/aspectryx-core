@@ -8,7 +8,6 @@ Environment configuration manager for setting up Spectre simulation parameters,
 specification ranges, and YAML configuration files for optimization workflows.
 """
 
-import yaml
 import os
 
 
@@ -117,34 +116,21 @@ class EnvironmentConfig(object):
             Absolute path to the generated YAML configuration file.
         """
         self.build_configs()
+        # Deprecated: YAML writing is no longer required; return dict instead
+        return self.get_config_dict()
 
-        netlist_name = os.path.splitext(os.path.basename(self.netlist_path))[0]
-        yaml_filename = f"{netlist_name}.yaml"
-
-        self.yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), yaml_filename)
-
-        with open(self.yaml_path, "w") as f:
-            yaml.dump(self.configs, f, default_flow_style=False, sort_keys=False)
-
-        # print(f"YAML configuration written to {self.yaml_path}")
-        return self.yaml_path
+    def get_config_dict(self):
+        """
+        Return the configuration as a Python dictionary. This is the preferred
+        method for providing configuration to the simulation stack instead of
+        writing/reading YAML files.
+        """
+        self.build_configs()
+        return dict(self.configs)
     
     def del_yaml(self):
         """
-        Delete the generated YAML configuration file.
-
-        Removes the YAML file from disk if it exists. Prints status messages
-        indicating success or if the file does not exist.
-
-        Returns:
-        --------
-        None
+        No-op: YAML files are deprecated. Kept for backward compatibility.
         """
-        # check if YAML file exists and delete if present
-        if os.path.exists(self.yaml_path):
-            os.remove(self.yaml_path)
-            # print(f"Deleted YAML file: {self.yaml_path}")
-        else:
-            # print(f"YAML file does not exist: {self.yaml_path}")
-            pass
+        return
     

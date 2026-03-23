@@ -10,13 +10,15 @@ cost function evaluation for iterative circuit optimization.
 """
 
 import os
+import tempfile
 from jinja2 import Environment, FileSystemLoader
-import os
 import shutil
 import subprocess
 from multiprocessing.dummy import Pool as ThreadPool
-import yaml
+# Programmatic configuration dictionaries are used (YAML not required)
 import importlib
+import json
+import hashlib
 import random
 import numpy as np
 import uuid
@@ -25,31 +27,6 @@ import gc
 from simulator.eval_engines.spectre.parser import SpectreParser
 
 debug = False 
-
-
-# ===== Configuration Utilities ===== #
-
-
-def get_config_info():
-    """
-    Retrieves configuration information from environment variables.
-
-    Reads the BASE_TMP_DIR environment variable which specifies the base
-    temporary directory for design generation and simulation.
-
-    Returns:
-    --------
-    config_info : dict
-        Dictionary containing configuration parameters from environment.
-    """
-    config_info = dict()
-    base_tmp_dir = os.environ.get('BASE_TMP_DIR', None)
-    if not base_tmp_dir:
-        raise EnvironmentError('BASE_TMP_DIR is not set in environment variables')
-    else:
-        config_info['BASE_TMP_DIR'] = base_tmp_dir
-
-    return config_info
 
 
 # ===== Spectre Simulation Wrapper ===== #
@@ -81,23 +58,16 @@ class SpectreWrapper(object):
         self.post_process = getattr(pp_class, tb_dict['post_process_function'])
         self.tb_params = tb_dict['tb_params']
 
-        # get configuration information from environment
-        self.config_info = get_config_info()
-
-        self.root_dir = self.config_info['BASE_TMP_DIR']
-        self.num_process = self.config_info.get('NUM_PROCESS', 1)
+        self.num_process = 1
 
         # Calculate project root and lstp path relative to this file
         self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
         self.lstp_path = os.path.join(self.project_root, "lstp")
 
-        # create unique design directory name
+        # Create scratch directory in system temp — never pollutes results dirs
         _, dsn_netlist_fname = os.path.split(netlist_loc)
-        # Use UUID to ensure unique design directory for every instance/process
         self.base_design_name = os.path.splitext(dsn_netlist_fname)[0] + "_" + uuid.uuid4().hex
-        self.gen_dir = os.path.join(self.root_dir, "designs_" + self.base_design_name)
-
-        os.makedirs(self.gen_dir, exist_ok=True)
+        self.gen_dir = tempfile.mkdtemp(prefix="aspector_", suffix="_" + self.base_design_name)
 
         # setup jinja2 template environment
         file_loader = FileSystemLoader(os.path.dirname(netlist_loc))
@@ -118,19 +88,13 @@ class SpectreWrapper(object):
         fname : str
             Unique filename identifier for the design.
         """
-        fname = self.base_design_name
-
-        # append scaled values for each parameter
-        for value in state.values():
-            if value<=2E-13:
-                x = value*1E14
-                fname += "_" + str(round(x,2))
-            elif value<=1E-6:
-                x = value*1E7
-                fname += "_" + str(round(x,2))
-            else:
-                fname += "_" + str(round(value,2))
-
+        # Use a short hash of the sorted state to avoid extremely long filenames
+        try:
+            s = json.dumps(state, sort_keys=True, default=str)
+        except Exception:
+            s = str(state)
+        short_id = hashlib.sha1(s.encode()).hexdigest()[:12]
+        fname = f"{self.base_design_name}_{short_id}"
         return fname
 
     def _create_design(self, state, new_fname):
@@ -165,14 +129,36 @@ class SpectreWrapper(object):
         render_context['lstp_path'] = self.lstp_path
         
         output = self.template.render(**render_context)
-        design_folder = os.path.join(self.gen_dir, new_fname)
+
+        # Create a short, safe folder/file name derived from the state
+        try:
+            s = json.dumps(state, sort_keys=True, default=str)
+        except Exception:
+            s = str(state)
+        short_id = hashlib.sha1(s.encode()).hexdigest()[:12]
+
+        safe_base = self.base_design_name
+        folder_name = f"{safe_base}_{short_id}"
+        design_folder = os.path.join(self.gen_dir, folder_name)
         os.makedirs(design_folder, exist_ok=True)
 
-        fpath = os.path.join(design_folder, new_fname + '.scs')
+        fpath = os.path.join(design_folder, f"{safe_base}_{short_id}.scs")
 
+        # Write netlist
         with open(fpath, 'w') as f:
             f.write(output)
-            f.close()
+
+        # Write metadata mapping short id -> original requested name and full state
+        try:
+            meta = {
+                'requested_name': str(new_fname),
+                'state': state
+            }
+            meta_path = os.path.join(design_folder, f"{safe_base}_{short_id}.meta.json")
+            with open(meta_path, 'w') as mf:
+                json.dump(meta, mf, indent=2, default=str)
+        except Exception:
+            pass
 
         return design_folder, fpath
 
@@ -191,15 +177,13 @@ class SpectreWrapper(object):
             Error code. 0 indicates successful simulation, 1 indicates error.
         """
         # construct Spectre command
-        command = ['nice', '-n', '19', 'spectre', '%s'%fpath, '-format', 'psfbin' ,'> /dev/null 2>&1']
+        command = ['nice', '-n', '19', 'spectre', '%s'%fpath, '-format', 'psfbin']
         log_file = os.path.join(os.path.dirname(fpath), 'log.txt')
         err_file = os.path.join(os.path.dirname(fpath), 'err_log.txt')
 
         # execute simulation and capture output
         with open(log_file, 'w') as file1, open(err_file,'w') as file2:
-          exit_code = subprocess.call(command, cwd=os.path.dirname(fpath), stdout=file1, stderr=file2)
-        file1.close()
-        file2.close()
+            exit_code = subprocess.call(command, cwd=os.path.dirname(fpath), stdout=file1, stderr=file2)
 
         # determine success based on exit code
         info = 0
@@ -241,17 +225,18 @@ class SpectreWrapper(object):
 
         # create netlist from template and run simulation
         design_folder, fpath = self._create_design(state, dsn_name)
-        
+
+        # create netlist from template and run simulation
         try:
             info = self._simulate(fpath)
             results = self._parse_result(design_folder)
-            
+
             # post process results
             if self.post_process:
                 specs = self.post_process(results, state)
                 return state, specs, info
             specs = results
-            
+
             return state, specs, info
         finally:
             self._cleanup(design_folder)
@@ -260,15 +245,47 @@ class SpectreWrapper(object):
         """
         Removes the generated design folder and all its contents to save space.
         """
-        gc.collect() # Force close of any open file handles from libpsf
-        time.sleep(1.0) 
+        gc.collect()
+
+        # Prefer moving the generated design folder into a persistent
+        # results directory (so raw simulation artifacts are preserved
+        # next to the JSON batch files) instead of removing it.
+        try:
+            results_dir = os.environ.get('ASPECTOR_RESULTS_DIR')
+        except Exception:
+            results_dir = None
 
         if os.path.exists(design_folder):
-            try:
-                shutil.rmtree(design_folder, ignore_errors=False)
-            except Exception as e:
-                # Fallback to stronger delete
-                subprocess.call(['rm', '-rf', design_folder])
+            moved = False
+            if results_dir:
+                try:
+                    raw_store = os.path.join(results_dir, "raw")
+                    os.makedirs(raw_store, exist_ok=True)
+                    dest = os.path.join(raw_store, os.path.basename(design_folder))
+                    # Avoid clobbering an existing folder
+                    if os.path.exists(dest):
+                        dest = dest + "_" + uuid.uuid4().hex[:8]
+                    shutil.move(design_folder, dest)
+                    moved = True
+                except Exception as e:
+                    try:
+                        print(f"[!] Failed to move design folder to results dir: {e}")
+                    except Exception:
+                        pass
+
+            if not moved:
+                try:
+                    shutil.rmtree(design_folder, ignore_errors=False)
+                except Exception as e:
+                    # Fallback to stronger delete
+                    subprocess.call(['rm', '-rf', design_folder])
+
+        # If gen_dir is now empty, remove it too (no orphan temp dirs)
+        try:
+            if os.path.exists(self.gen_dir) and not os.listdir(self.gen_dir):
+                os.rmdir(self.gen_dir)
+        except OSError:
+            pass
 
     def _parse_result(self, design_folder):
         """
@@ -344,19 +361,17 @@ class EvaluationEngine(object):
 
     Initialization Parameters:
     --------------------------
-    yaml_fname : str
-        Path to YAML configuration file specifying parameters,
-        specifications, and testbench setup.
+    config : dict
+        Configuration dictionary specifying parameters, specifications, and testbench setup.
     """
 
-    def __init__(self, yaml_fname):
-
-        self.design_specs_fname = yaml_fname
-        
-        # load configuration from YAML file
-        with open(yaml_fname, 'r') as f:
-            self.ver_specs = yaml.load(f, Loader=yaml.Loader)
-        f.close()
+    def __init__(self, config):
+        # Accept a configuration dictionary. YAML files are deprecated.
+        self.design_specs = config
+        if isinstance(config, dict):
+            self.ver_specs = config
+        else:
+            raise RuntimeError("EvaluationEngine requires a configuration dictionary. YAML files are deprecated.")
 
         # setup testbench modules
         self.measurement_specs = self.ver_specs['measurement']
@@ -398,10 +413,22 @@ class EvaluationEngine(object):
                 first_res = list(sim_results.values())[0]
                 specs_dict = first_res[1]
 
-            # Return format matching legacy expectation: (state, specs, info)
-            # We construct a dummy info here
-            info = 0
-            results.append((state, specs_dict, info))
+            # Collect actual info codes from each netlist simulation where available
+            info_codes = []
+            for net_res in sim_results.values():
+                try:
+                    # net_res is expected to be a tuple (state, specs, info)
+                    if isinstance(net_res, tuple) and len(net_res) > 2:
+                        info_codes.append(int(net_res[2]))
+                except Exception:
+                    pass
+
+            # If any underlying simulation returned non-zero info, propagate failure (1)
+            overall_info = 0
+            if any(ic for ic in info_codes):
+                overall_info = 1
+
+            results.append((state, specs_dict, overall_info))
 
         return results
 

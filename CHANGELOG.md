@@ -1,3 +1,9 @@
+Version **1.5.0**
+
+Date Released: **03/22/2026**
+
+- Pipeline upgrades and major refactoring to spec functions and sampling algorithms
+
 Version **1.4.2**
 
 Date Released: **02/22/2026**

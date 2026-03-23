@@ -1,0 +1,145 @@
+simulator lang=spectre 
+global 0 gnd! vdd!
+parameters dc_offset=0 run_gatekeeper={{run_gatekeeper}} run_full_char={{run_full_char}} fet_num={{fet_num}} vdd={{vdd}} vcm={{vcm}} tempc={{tempc}} cload_val={{cload_val}} vbiasn0={{vbiasn0}} vbiasn1={{vbiasn1}} vbiasp0={{vbiasp0}} nA1={{nA1}} nA2={{nA2}} nA3={{nA3}} nA4={{nA4}} nA5={{nA5}} nA6={{nA6}} nA7={{nA7}} nA8={{nA8}} nA9={{nA9}} nA10={{nA10}} nB1={{nB1}} nB2={{nB2}} nB3={{nB3}} nB4={{nB4}} nB5={{nB5}} nB6={{nB6}} nB7={{nB7}} nB8={{nB8}} nB9={{nB9}} nB10={{nB10}}
+
+{% if fet_num == 7 %}
+include "{{lstp_path}}/7nfet.pm"
+include "{{lstp_path}}/7pfet.pm"
+{% elif fet_num == 10 %}
+include "{{lstp_path}}/10nfet.pm"
+include "{{lstp_path}}/10pfet.pm"
+{% elif fet_num == 14 %}
+include "{{lstp_path}}/14nfet.pm"
+include "{{lstp_path}}/14pfet.pm"
+{% elif fet_num == 16 %}
+include "{{lstp_path}}/16nfet.pm"
+include "{{lstp_path}}/16pfet.pm"
+{% elif fet_num == 20 %}
+include "{{lstp_path}}/20nfet.pm"
+include "{{lstp_path}}/20pfet.pm"
+{% endif %}
+
+*--- TOPOLOGY ---*
+*--- differential_telescopic_gain_boosted_ota_21fet_nmos Vbiasn0 Vbiasn1 Vbiasp0 Vinn Vinp Voutn Voutp ---*
+*.PININFO Vbiasn0:I Vbiasn1:I Vbiasp0:I Vinn:I Vinp:I Voutn:O Voutp:O
+MM0 net10 Vbiasn0 gnd! gnd! nfet l=nA1 nfin=nB1
+MM1 net11 Vinn net10 gnd! nfet l=nA2 nfin=nB2
+MM2 net12 Vinp net10 gnd! nfet l=nA2 nfin=nB2
+MM3 Voutp net17 net11 gnd! nfet l=nA3 nfin=nB3
+MM4 Voutn net18 net12 gnd! nfet l=nA3 nfin=nB3
+MM5 Voutp net19 net13 vdd! pfet l=nA4 nfin=nB4
+MM6 Voutn net20 net14 vdd! pfet l=nA4 nfin=nB4
+MM7 net13 Vbiasp0 vdd! vdd! pfet l=nA5 nfin=nB5
+MM8 net14 Vbiasp0 vdd! vdd! pfet l=nA5 nfin=nB5
+MM9  net15 net11 gnd!  gnd! nfet l=nA6 nfin=nB6
+MM10 net15 net15 vdd!  vdd! pfet l=nA7 nfin=nB7
+MM11 net17 net15 vdd!  vdd! pfet l=nA8 nfin=nB8
+MM12 net17 Vbiasn1 gnd! gnd! nfet l=nA9 nfin=nB9
+MM13 net16 net12 gnd!  gnd! nfet l=nA6 nfin=nB6
+MM14 net16 net16 vdd!  vdd! pfet l=nA7 nfin=nB7
+MM15 net18 net16 vdd!  vdd! pfet l=nA8 nfin=nB8
+MM16 net18 Vbiasn1 gnd! gnd! nfet l=nA9 nfin=nB9
+MM17 net19 net13 vdd!  vdd! pfet l=nA10 nfin=nB10
+MM18 net19 Vbiasn1 gnd! gnd! nfet l=nA9  nfin=nB9
+MM19 net20 net14 vdd!  vdd! pfet l=nA10 nfin=nB10
+MM20 net20 Vbiasn1 gnd! gnd! nfet l=nA9  nfin=nB9
+
+*--- Bias Values ---*
+VN0 (Vbiasn0 gnd!) vsource dc=vbiasn0 type=dc
+VN1 (Vbiasn1 gnd!) vsource dc=vbiasn1 type=dc
+VP0 (Vbiasp0 gnd!) vsource dc=vbiasp0 type=dc
+
+*--- TESTBENCH ---*
+VS (gnd! 0) vsource dc=0 type=dc
+V0 (vdd! gnd!) vsource dc=vdd type=dc 
+V1 (cm gnd!) vsource dc=vcm type=dc 
+
+Vsig (sig_node 0) vsource type=sine dc=dc_offset mag=1 \
+    ampl=0 freq=1M val0=0 val1=0 delay=5n rise=50p fall=50p width=2u period=200n
+
+E_pos (Vinp_pre cm sig_node 0) vcvs gain=0.5
+E_neg (Vinn_pre cm sig_node 0) vcvs gain=-0.5
+
+R_src_p (Vinp_pre Vinp) resistor r=1G isnoisy=no
+R_src_n (Vinn_pre Vinn) resistor r=1G isnoisy=no
+
+I_probe_p (Voutp Vfb_p) iprobe
+I_probe_n (Voutn Vfb_n) iprobe
+
+R_fb_p (Vfb_p Vinn) resistor r=1m isnoisy=no
+R_fb_n (Vfb_n Vinp) resistor r=1m isnoisy=no
+
+E_servo_diff (v_err 0 Voutn Voutp) vcvs gain=1e6
+R_servo_int (v_err v_int) resistor r=1G isnoisy=no
+C_servo_int (v_int 0) capacitor c=1F
+E_servo_p (v_corr_p cm v_int 0) vcvs gain=0.5
+E_servo_n (v_corr_n cm v_int 0) vcvs gain=-0.5
+
+R_servo_sw_p (v_corr_p Vinp) resistor r=1G isnoisy=no
+R_servo_sw_n (v_corr_n Vinn) resistor r=1G isnoisy=no
+
+R_cm_p (Voutp Vavg) resistor r=1G isnoisy=no
+R_cm_n (Voutn Vavg) resistor r=1G isnoisy=no
+G_cmfb_p (Voutp 0 Vavg cm) vccs gm=0.001
+G_cmfb_n (Voutn 0 Vavg cm) vccs gm=0.001
+
+Cload_p (Voutp gnd!) capacitor c=cload_val
+Cload_n (Voutn gnd!) capacitor c=cload_val
+
+*--- SIMULATOR OPTIONS ---*
+simulatorOptions options rawfmt=psfbin psfversion="1.4.0" reltol=1e-4 vabstol=1e-6 \
+    iabstol=1e-12 temp=tempc tnom=27 scalem=1.0 scale=1.0 gmin=1e-12 rforce=1 \
+    cmin=1f homotopy=all
+
+*--- SIMULATION TIER 1 ---*
+{% if run_gatekeeper %}
+dcOp_sim dc 
+stb_sim stb probe=[I_probe_p I_probe_n] start=1 stop=100G dec=10
+{% endif %}
+
+*--- SIMULATION TIER 2 ---*
+{% if run_full_char %}
+set_fb_off_p alter dev=R_fb_p param=r value=1G
+set_fb_off_n alter dev=R_fb_n param=r value=1G
+set_intrinsic_on_p alter dev=R_src_p param=r value=1m
+set_intrinsic_on_n alter dev=R_src_n param=r value=1m
+set_servo_on_p alter dev=R_servo_sw_p param=r value=1m
+set_servo_on_n alter dev=R_servo_sw_n param=r value=1m
+
+xf_sim (Voutp Voutn) xf start=1 stop=100G dec=10
+noise_sim (Voutp Voutn) noise start=1 stop=100G dec=10 iprobe=Vsig
+
+set_servo_off_p alter dev=R_servo_sw_p param=r value=1G
+set_servo_off_n alter dev=R_servo_sw_n param=r value=1G
+
+swing_sweep dc param=dc_offset start=(-0.1 * vdd) stop=(0.1 * vdd) step=200u
+
+set_fb_on_p alter dev=R_fb_p param=r value=1m
+set_fb_on_n alter dev=R_fb_n param=r value=1m
+set_src_sine_type alter dev=Vsig param=type value=sine
+set_src_sine_ampl alter dev=Vsig param=ampl value=(0.1 * vdd)
+set_src_sine_freq alter dev=Vsig param=freq value=1M
+
+thd_pss pss fund=1M harms=10 tstab=2u errpreset=moderate
+
+set_src_pulse_type alter dev=Vsig param=type value=pulse
+set_src_val_small alter dev=Vsig param=val1 value=(0.05 * vdd)
+set_src_width alter dev=Vsig param=width value=2u
+
+settle_small_tran tran stop=200n step=100p errpreset=conservative
+
+set_src_val_large alter dev=Vsig param=val1 value=(0.2 * vdd)
+
+slew_large_tran tran stop=200n step=100p errpreset=conservative
+{% endif %}
+
+*--- DATA EXPORT ---*
+dcOpInfo info what=oppoint where=rawfile
+modelParameter info what=models where=rawfile
+element info what=inst where=rawfile
+outputParameter info what=output where=rawfile
+designParamVals info what=parameters where=rawfile
+primitives info what=primitives where=rawfile
+subckts info what=subckts where=rawfile
+save V0:p Voutp Voutn Vinp Vinn MM0:gm MM0:gds MM0:vth MM0:vdsat MM0:vgs MM0:vds MM0:ids MM0:cgg MM0:cgs MM0:cdd MM0:cgd MM0:css MM0:region MM1:gm MM1:gds MM1:vth MM1:vdsat MM1:vgs MM1:vds MM1:ids MM1:cgg MM1:cgs MM1:cdd MM1:cgd MM1:css MM1:region MM2:gm MM2:gds MM2:vth MM2:vdsat MM2:vgs MM2:vds MM2:ids MM2:cgg MM2:cgs MM2:cdd MM2:cgd MM2:css MM2:region MM3:gm MM3:gds MM3:vth MM3:vdsat MM3:vgs MM3:vds MM3:ids MM3:cgg MM3:cgs MM3:cdd MM3:cgd MM3:css MM3:region MM4:gm MM4:gds MM4:vth MM4:vdsat MM4:vgs MM4:vds MM4:ids MM4:cgg MM4:cgs MM4:cdd MM4:cgd MM4:css MM4:region MM5:gm MM5:gds MM5:vth MM5:vdsat MM5:vgs MM5:vds MM5:ids MM5:cgg MM5:cgs MM5:cdd MM5:cgd MM5:css MM5:region MM6:gm MM6:gds MM6:vth MM6:vdsat MM6:vgs MM6:vds MM6:ids MM6:cgg MM6:cgs MM6:cdd MM6:cgd MM6:css MM6:region MM7:gm MM7:gds MM7:vth MM7:vdsat MM7:vgs MM7:vds MM7:ids MM7:cgg MM7:cgs MM7:cdd MM7:cgd MM7:css MM7:region MM8:gm MM8:gds MM8:vth MM8:vdsat MM8:vgs MM8:vds MM8:ids MM8:cgg MM8:cgs MM8:cdd MM8:cgd MM8:css MM8:region MM9:gm MM9:gds MM9:vth MM9:vdsat MM9:vgs MM9:vds MM9:ids MM9:cgg MM9:cgs MM9:cdd MM9:cgd MM9:css MM9:region MM10:gm MM10:gds MM10:vth MM10:vdsat MM10:vgs MM10:vds MM10:ids MM10:cgg MM10:cgs MM10:cdd MM10:cgd MM10:css MM10:region MM11:gm MM11:gds MM11:vth MM11:vdsat MM11:vgs MM11:vds MM11:ids MM11:cgg MM11:cgs MM11:cdd MM11:cgd MM11:css MM11:region MM12:gm MM12:gds MM12:vth MM12:vdsat MM12:vgs MM12:vds MM12:ids MM12:cgg MM12:cgs MM12:cdd MM12:cgd MM12:css MM12:region MM13:gm MM13:gds MM13:vth MM13:vdsat MM13:vgs MM13:vds MM13:ids MM13:cgg MM13:cgs MM13:cdd MM13:cgd MM13:css MM13:region MM14:gm MM14:gds MM14:vth MM14:vdsat MM14:vgs MM14:vds MM14:ids MM14:cgg MM14:cgs MM14:cdd MM14:cgd MM14:css MM14:region MM15:gm MM15:gds MM15:vth MM15:vdsat MM15:vgs MM15:vds MM15:ids MM15:cgg MM15:cgs MM15:cdd MM15:cgd MM15:css MM15:region MM16:gm MM16:gds MM16:vth MM16:vdsat MM16:vgs MM16:vds MM16:ids MM16:cgg MM16:cgs MM16:cdd MM16:cgd MM16:css MM16:region MM17:gm MM17:gds MM17:vth MM17:vdsat MM17:vgs MM17:vds MM17:ids MM17:cgg MM17:cgs MM17:cdd MM17:cgd MM17:css MM17:region MM18:gm MM18:gds MM18:vth MM18:vdsat MM18:vgs MM18:vds MM18:ids MM18:cgg MM18:cgs MM18:cdd MM18:cgd MM18:css MM18:region MM19:gm MM19:gds MM19:vth MM19:vdsat MM19:vgs MM19:vds MM19:ids MM19:cgg MM19:cgs MM19:cdd MM19:cgd MM19:css MM19:region MM20:gm MM20:gds MM20:vth MM20:vdsat MM20:vgs MM20:vds MM20:ids MM20:cgg MM20:cgs MM20:cdd MM20:cgd MM20:css MM20:region
+saveOptions options save=allpub rawfmt=psfbin

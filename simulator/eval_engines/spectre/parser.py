@@ -322,12 +322,16 @@ class SpectreParser(object):
             try:
                 with suppress_output():
                     datum = cls.process_file(file_path)
-            except FileNotCompatible:
+            except (FileNotCompatible, RuntimeError, Exception):
                 continue
 
             # extract signal name from filename
             _, kwrd = os.path.split(file)
-            kwrd = os.path.splitext(kwrd)[0]
+            # Keep .fd extension for PSS frequency-domain results so
+            # thd_pss.fd and thd_pss.pss get distinct keys (avoids
+            # non-deterministic overwrite from os.listdir ordering).
+            if not kwrd.endswith('.fd'):
+                kwrd = os.path.splitext(kwrd)[0]
             data[kwrd] = datum
 
         return data
@@ -364,14 +368,20 @@ class SpectreParser(object):
         is_swept = psfobj.is_swept()
         datum = dict()
         
-        # extract all signal data
+        # extract all signal data (skip individual signals that cause libpsf C++ errors)
         for signal in psfobj.get_signal_names():
-            datum[signal] = psfobj.get_signal(signal)
+            try:
+                datum[signal] = psfobj.get_signal(signal)
+            except (RuntimeError, Exception):
+                continue
 
         # add sweep parameters if present
         if is_swept:
-            datum['sweep_vars'] = psfobj.get_sweep_param_names()
-            datum['sweep_values'] = psfobj.get_sweep_values()
+            try:
+                datum['sweep_vars'] = psfobj.get_sweep_param_names()
+                datum['sweep_values'] = psfobj.get_sweep_values()
+            except (RuntimeError, Exception):
+                pass
 
         psfobj.close()
         return datum
