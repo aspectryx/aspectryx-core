@@ -1,4 +1,4 @@
-# Corvina
+# CORVINA
 
 A Cadence Spectre optimization and data-generation pipeline for OTA netlists.
 
@@ -6,7 +6,7 @@ Current Version: **1.5.1**
 
 ## ⚡ About
 
-Corvina contains an interactive CLI capable of running closed-loop design space exploration with Sobol and TuRBO-M over OTA design parameters. Each simulation point is parsed into structured records for:
+CORVINA contains an interactive CLI capable of running closed-loop design space exploration with Sobol and TuRBO-M over OTA design parameters. Each simulation point is parsed into structured records for:
 
 - Input sizing and environment parameters
 - Device-level operating-point features
